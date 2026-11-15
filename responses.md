@@ -85,3 +85,85 @@ Zwei Alternativen für persistente Session-Stores:
 
 1. **connect-mongo** – speichert Sessions in MongoDB.
 2. **connect-redis** – speichert Sessions in Redis.
+
+## Registrierung und Login mit bcrypt
+
+Die `/register` mit `404` beantwortete. Nach einem Neustart der aktuellen App kann `3001` in den Befehlen durch `3000` ersetzt werden. Die Cookie-Datei wurde für den Test separat gehalten.
+
+Vor den drei Aufrufen wurde `/visits` einmal mit demselben Cookie-Speicher
+aufgerufen, um die Session-ID vor dem Login zu vergleichen. Die ID wird hier aus Sicherheitsgründen gekürzt.
+
+### 1. Registrierung
+
+```text
+$ curl -i -H "Content-Type: application/json" -d "{\"email\":\"anna@example.com\",\"name\":\"Anna\",\"password\":\"geheim123\"}" http://localhost:3001/register
+HTTP/1.1 201 Created
+X-Powered-By: Express
+Content-Type: application/json; charset=utf-8
+Content-Length: 49
+ETag: W/"31-jfhEEz0F1eF5S5fGS0cF68JEvRY"
+Date: Sun, 15 Nov 2026 10:39:22 GMT
+Connection: keep-alive
+Keep-Alive: timeout=5
+
+{"id":1,"email":"anna@example.com","name":"Anna"}
+
+```
+
+Die Registrierung war erfolgreich. Der Passwort-Hash wird nicht in der Antwort zurückgegeben.
+
+### 2. Login mit falschem Passwort
+
+```text
+$ curl -i -c cookies.txt -b cookies.txt -H "Content-Type: application/json" -d "{\"email\":\"anna@example.com\",\"password\":\"falsch\"}" http://localhost:3001/login
+HTTP/1.1 401 Unauthorized
+X-Powered-By: Express
+Content-Type: application/json; charset=utf-8
+Content-Length: 35
+ETag: W/"23-+tMxT+nKEucsoEMwB5S7lUJ/89Q"
+Date: Sun, 15 Nov 2026 10:40:22 GMT
+Connection: keep-alive
+Keep-Alive: timeout=5
+
+{"error":"Ungültige Zugangsdaten"}
+
+```
+
+### 3. Login mit richtigem Passwort
+
+```text
+$ curl -i -c cookies.txt -b cookies.txt -H "Content-Type: application/json" -d "{\"email\":\"anna@example.com\",\"password\":\"geheim123\"}" http://localhost:3001/login
+HTTP/1.1 200 OK
+X-Powered-By: Express
+Content-Type: application/json; charset=utf-8
+Content-Length: 45
+ETag: W/"2d-MSwrIJnlbmHZzMwv0pjpxSvskUs"
+Set-Cookie: connect.sid=s%3AFi1mkzER-pdfvimFNIyoMSSorgQ2bScW.jUWSAlDIb4kICZ2GJN3YrcUlpHYPZbE5xU4Of7DnHvI; Path=/; Expires=Sun, 15 Nov 2026 11:10:43 GMT; HttpOnly
+Date: Sun, 15 Nov 2026 10:40:43 GMT
+Connection: keep-alive
+Keep-Alive: timeout=5
+
+{"message":"Login erfolgreich","name":"Anna"}
+```
+
+### Warum ist bcrypt für Passwörter besser geeignet als z. B. SHA-256? Was bedeuten Salt und Cost Factor?
+bcrypt speichert kein entschlüsselbares Passwort, sondern berechnet daraus einen Hash, der nur in eine Richtung funktioniert. Das ursprüngliche Passwort kann also nicht zurückgewonnen werden.
+
+Warum bcrypt besser als SHA-256 ist:
+- SHA-256 ist sehr schnell. Dadurch können Angreifer sehr viele Passwörter in kurzer Zeit ausprobieren.
+- bcrypt ist absichtlich langsam und macht das massenhafte Ausprobieren von Passwörtern deutlich aufwendiger.
+- Beim Login prüft bcrypt.compare das eingegebene Passwort mit dem gespeicherten Hash, ohne das ursprüngliche Passwort zurückzugewinnen.
+
+Salt:
+Ein Salt ist eine zufällig generierte Zeichenfolge, die beim Hashen hinzugefügt wird. Dadurch erhalten auch zwei Benutzer mit demselben Passwort unterschiedliche Hashes. Das erschwert Angriffe mit vorberechneten Hash-Tabellen (Rainbow Tables).
+
+Cost Factor:
+Der Cost Factor bestimmt, wie aufwendig die Hash-Berechnung ist. Je höher er ist, desto länger dauert die Berechnung. Eine Erhöhung um 1 verdoppelt ungefähr den Rechenaufwand. Dadurch wird es für Angreifer schwieriger, viele Passwörter auszuprobieren.
+
+
+### Warum dieselbe Fehlermeldung
+Für eine unbekannte E-Mail-Adresse und für ein falsches Passwort wird dieselbe Fehlermeldung mit Status `401` gesendet. Dadurch verrät die Antwort nicht, ob ein bestimmtes Konto existiert. Das erschwert **Benutzer-/Account-Enumeration**, also das systematische Ermitteln gültiger E-Mail-Adressen durch Ausprobieren von Login-Anfragen.
+
+### Wurde die Set-Cookie-Session-ID beim erfolgreichen Login gegenüber einem vorherigen Aufruf von
+/visits verändert? Begründen Sie das mit dem Aufruf von regenerate
+Beim vorherigen Aufruf von `/visits` war die Session-ID eine andere als die `connect.sid`-ID der erfolgreichen Login-Antwort. Das ist beabsichtigt: `req.session.regenerate()` verwirft die bisherige Session und erzeugt eine neue Session-ID. So wird verhindert, dass nach dem Login dieselbe, möglicherweise bereits bekannte ID weiterverwendet wird (Session Fixation).
