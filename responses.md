@@ -200,3 +200,70 @@ werden; bei HTTP sendet der Browser es daher normalerweise nicht, und die
 Session funktioniert nicht wie erwartet. Darum verwendet die App
 `secure: false` in der Entwicklung und `secure: true`, wenn
 `NODE_ENV === "production"` gilt. Im Produktivbetrieb muss die Anwendung über HTTPS erreichbar sein.
+
+## Fragen zu Sessions und Authentifizierung
+
+1. **Warum ist HTTP zustandslos? Wie helfen Sessions und Cookies?**  
+   HTTP-Anfragen sind voneinander unabhängig: Der Server merkt sich nicht
+   automatisch, dass zwei Anfragen vom selben Browser stammen. Im Test sah man das bei curl ohne Cookie-Datei: `/visits` begann bei jeder neuen Sitzung wieder bei `1`. Mit `-c` und `-b` wurde `connect.sid` gespeichert und zurückgesendet; so konnte der Server dieselbe Session erkennen und den Zähler beim nächsten Aufruf auf `2` erhöhen. Das Cookie verbindet einzelne HTTP-Anfragen mit einer serverseitigen Session.
+
+2. **Was liegt im Cookie und was auf dem Server? Warum nicht alle Daten ins Cookie?**  
+   Im Cookie `connect.sid` steht eine signierte Session-ID. Die Sitzungsdaten, zum Beispiel `userId` und `visits`, liegen im Session-Store auf dem Server. Auch die Demo-Benutzer mit ihrem Passwort-Hash liegen derzeit in einer In-Memory-Liste auf dem Server. Würden alle Daten im Cookie liegen, könnte der Client diese Daten bei jeder Anfrage mitliefern und versuchen, sie zu verändern. Ein signiertes Cookie schützt zwar die Integrität, aber nicht die Vertraulichkeit seines Inhalts; außerdem wäre es grösser und müsste bei jeder Anfrage übertragen werden. Serverseitige Daten können geheim bleiben und lassen sich zentral ändern oder widerrufen.
+
+3. **Wozu dient `SESSION_SECRET`? Was könnte ein Angreifer mit dem Wert tun?**  
+   `express-session` verwendet das Secret, um das Session-Cookie zu signieren. Der Server kann so erkennen, ob die Cookie-ID manipuliert wurde. Kennt ein Angreifer das Secret, kann er gültige Signaturen für manipulierte Session-Cookies erzeugen und die Vertrauensprüfung untergraben. Das Secret allein verrät ihm nicht automatisch die serverseitigen Session-Daten oder die zufällige Session-ID eines Opfers; zusammen mit einer bekannten oder gestohlenen ID kann es aber die Übernahme einer Session erleichtern. Darum gehört ein langes, zufälliges Secret in eine geschützte Umgebungsvariable und nicht in den Quellcode.
+
+4. **Was bedeuten `resave` und `saveUninitialized`? Warum ist `false` sinnvoll?**  
+   `resave: false` bedeutet, dass eine unveränderte Session nicht bei jeder Anfrage erneut vollständig gespeichert wird. `saveUninitialized: false` bedeutet, dass eine neue, noch nicht veränderte Session gar nicht erst im Store gespeichert und kein unnötiges Session-Cookie dafür gesetzt wird. Das spart Speicher und vermeidet, schon für einen blossen Besuch ohne Anmelde- oder Sessionbedarf ein identifizierendes Cookie anzulegen. Das unterstützt Datenminimierung und kann für DSGVO-/Cookie-Banner-Fragen relevant sein, ist aber für sich allein keine rechtliche Beurteilung und ersetzt keine Prüfung der konkreten Einwilligungs- und Informationspflichten. Im Demo-Code wird eine Session beispielsweise beim Zählen in `/visits` oder beim erfolgreichen Login verändert und kann dann gespeichert werden.
+
+5. **Was ist Session Fixation? Wie hilft `req.session.regenerate()`?**  
+   Bei Session Fixation bringt ein Angreifer das Opfer dazu, eine Session-ID zu verwenden, die dem Angreifer bereits bekannt ist. Meldet sich das Opfer mit dieser Session an und bleibt die ID gleich, könnte der Angreifer die angemeldete Session übernehmen. Im Login-Code ruft die App nach erfolgreicher Passwortprüfung `req.session.regenerate()` auf. Dadurch wird die alte Session verworfen und eine neue ID erstellt, bevor `userId` in der neuen Session gespeichert wird. Im Test war die ID nach erfolgreichem Login gegenüber der vorherigen ID verschieden.
+
+6. **Was ist CSRF? Wie hilft `sameSite` und warum reicht es nicht immer?**  
+   Bei einem Cross-Site Request Forgery (CSRF) bringt eine fremde Webseite den Browser einer angemeldeten Person dazu, ungewollt eine Anfrage an die App zu senden. Der Browser könnte dabei automatisch das Session-Cookie mitschicken. `sameSite: "lax"` schränkt das Mitsenden bei vielen seitenübergreifenden Anfragen ein und verringert damit das Risiko. Es ist aber keine vollständige CSRF-Lösung: Es gibt erlaubte Navigationsfälle, Browser- und Anwendungsspezifika sowie mögliche same-site Angriffe. Zustandsändernde
+   Aktionen sollten zusätzlich durch CSRF-Tokens oder geeignete Origin-Prüfungen geschützt und nicht über GET ausgeführt werden.
+
+7. **Session-Authentifizierung und JWT: je zwei Vor- und Nachteile**  
+   Bei Sessions speichert der Server den Zustand; der Client schickt bei jeder Anfrage die Session-ID als Cookie. Bei JWT enthält ein vom Server signiertes Token Claims, die der Server prüft; je nach Aufbau muss dafür nicht bei jeder Anfrage ein Session-Eintrag nachgeschlagen werden.
+
+   **Sessions – Vorteile:** 
+   - Logout und Sperren sind einfach, weil der Server-Eintrag gelöscht oder geändert werden kann. 
+   - Das Cookie enthält nur eine undurchsichtige ID, die Anwendungsdaten bleiben serverseitig.
+   
+   **Sessions – Nachteile:** 
+   - Der Session-Store muss verfügbar sein und bei mehreren Servern gemeinsam genutzt werden. 
+   - Cookie-basierte Sessions müssen gegen CSRF abgesichert werden.
+
+   **JWT – Vorteile:** 
+   - Ein Server kann ein gültig signiertes Token oft ohne zentralen Session-Lookup prüfen, was verteilte APIs vereinfachen kann.
+   - Token lassen sich gut für verschiedene Dienste oder Clients einsetzen, wenn diese ein passendes Token erhalten.
+   
+   **JWT – Nachteile:** 
+   - Ein bereits ausgestelltes Token lässt sich bis zum Ablauf schwer sofort widerrufen; dafür braucht man zum Beispiel kurze Laufzeiten oder eine Sperrliste. 
+   - Gestohlene Bearer-Tokens können bis zum Ablauf missbraucht werden, und Claims im signierten JWT sind nicht automatisch geheim. JWTs im Browser müssen ausserdem sicher gespeichert und bei Cookie-Transport gegen CSRF geschützt werden.
+
+8. **Warum ist `MemoryStore` mit Load Balancing problematisch? Wie löst man das?**  
+   Jede Node.js-Instanz hat ihren eigenen Arbeitsspeicher. Wenn eine Anfrage mit einer Session bei Server A landet und die nächste wegen Load Balancing bei Server B, kennt B die Session aus As `MemoryStore` nicht und behandelt den Benutzer möglicherweise als abgemeldet. Ein Neustart löscht die gespeicherten Sessions ebenfalls. Die übliche Lösung ist ein gemeinsamer, für alle Instanzen erreichbarer Session-Store, etwa Redis oder MongoDB (zum Beispiel `connect-redis` oder `connect-mongo`). Sticky Sessions können Anfragen vorübergehend an dieselbe Instanz lenken, ersetzen aber keinen gemeinsamen, dauerhaften Store.
+
+9. **Welche weiteren Massnahmen braucht eine produktive Anwendung?**  
+   - **HTTPS überall und `Secure`-Cookies:** schützt Zugangsdaten und
+     Session-Cookies auf dem Transportweg vor Mitlesen und Manipulation.
+   - **Rate Limiting und gegebenenfalls Verzögerungen beim Login:** erschwert
+     automatisiertes Ausprobieren vieler Passwörter; zusätzlich sollte es
+     Überwachung und angemessene Sperr-/Drosselungsregeln geben.
+   - **Persistente Datenbank für Benutzer und gemeinsamer Session-Store:** die
+     aktuelle Demo verliert sowohl die Benutzerliste als auch MemoryStore-
+     Sessions beim Neustart; produktive Daten müssen dauerhaft und
+     instanzübergreifend verfügbar sein.
+   - **Session-Timeouts und Erneuerung:** begrenzte Inaktivitäts- und absolute
+     Laufzeiten reduzieren das Zeitfenster, in dem ein gestohlenes Cookie
+     nutzbar ist. Nach Login und Berechtigungsänderungen sollte die ID erneuert
+     werden; Logout muss serverseitig widerrufen.
+   - **CSRF-Schutz und sichere Eingabevalidierung:** SameSite allein schützt
+     nicht in jedem Fall. CSRF-Tokens/Origin-Prüfungen sowie Prüfung aller
+     Eingaben verhindern weitere häufige Angriffswege.
+   - **Geheimnisse, Passwörter und Betrieb absichern:** `SESSION_SECRET` sicher
+     verwalten und rotieren können, Passwörter nur mit einem geeigneten
+     Passwort-Hash speichern, Abhängigkeiten aktualisieren und sicherheits-
+     relevante Ereignisse protokollieren, ohne Passwörter oder Session-IDs in
+     Logs zu schreiben.

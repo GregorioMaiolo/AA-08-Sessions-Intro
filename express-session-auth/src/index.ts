@@ -1,10 +1,11 @@
 import "dotenv/config";
-import express from "express";
+import express, { type NextFunction, type Request, type Response } from "express";
 import session from "express-session";
 import bcrypt from "bcryptjs";
 
 const app = express();
 const port = Number(process.env.PORT ?? 3000);
+const isProduction = process.env.NODE_ENV === "production";
 
 interface User {
     id: number;
@@ -12,6 +13,8 @@ interface User {
     name: string;
     passwordHash: string;
 }
+
+
 const users: User[] = [];
 let nextUserId = 1;
 
@@ -19,6 +22,15 @@ if (!process.env.SESSION_SECRET) {
     throw new Error("SESSION_SECRET fehlt in der .env-Datei");
 }
 
+const requireAuth = (req: Request, res: Response, next: NextFunction) => {
+    // TODO: Ohne userId in der Session mit Status 401 und { error: "Nicht angemeldet" } antworten,
+    //       sonst next() aufrufen.
+    if (!req.session.userId) {
+        return res.status(401).json({ error: "Nicht angemeldet" });
+    }
+
+    next();
+};
 
 app.use(express.json());
 
@@ -29,6 +41,8 @@ app.use(
         saveUninitialized: false,
         cookie: {
             httpOnly: true,
+            sameSite: "lax",
+            secure: isProduction,
             maxAge: 1000 * 60 * 30, // 30 Minuten
         },
     }),
@@ -41,6 +55,17 @@ app.get("/", (_req, res) => {
 app.get("/visits", (req, res) => {
     req.session.visits = (req.session.visits ?? 0) + 1;
     res.json({ sessionId: req.sessionID, visits: req.session.visits });
+});
+
+app.get("/me", requireAuth, (req, res) => {
+    // TODO: Benutzer anhand von req.session.userId suchen und id, email, name
+    //       (ohne passwordHash!) zurückgeben.
+    const user = users.find((u) => u.id === req.session.userId);
+    if (!user) {
+        return res.status(401).json({ error: "Nicht angemeldet" });
+    }
+
+    res.json({ id: user.id, email: user.email, name: user.name });
 });
 
 app.post("/register", async (req, res) => {
@@ -68,7 +93,7 @@ app.post("/login", async (req, res) => {
     const user = users.find((u) => u.email === email);
     // TODO: Passwort mit bcrypt.compare prüfen. Bei unbekannter E-Mail UND bei
     //       falschem Passwort dieselbe Antwort senden: Status 401, { error: "Ungültige Zugangsdaten"}
-     if (!user || typeof password !== "string" || !(await bcrypt.compare(password, user.passwordHash))) {
+    if (!user || typeof password !== "string" || !(await bcrypt.compare(password, user.passwordHash))) {
         return res.status(401).json({ error: "Ungültige Zugangsdaten" });
     }
 
@@ -93,6 +118,15 @@ app.post("/login", async (req, res) => {
     });
 });
 
+app.post("/logout", requireAuth, (req, res) => {
+    req.session.destroy((err) => {
+        if (err) {
+            return res.status(500).json({ error: "Logout fehlgeschlagen" });
+        }
+        res.clearCookie("connect.sid");
+        res.json({ message: "Logout erfolgreich" });
+    });
+});
 app.listen(port, () => {
     console.log(`Server läuft auf http://localhost:${port}`);
 });
